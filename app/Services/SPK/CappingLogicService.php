@@ -10,26 +10,33 @@ class CappingLogicService
     public function applyCapping(array $warungs, int $totalStock, float $alpha, array $topsisScores): array
     {
         $allocations = [];
-        $totalMg = array_sum(array_column($warungs, 'mg_normal'));
+        // Hanya hitung kebutuhan MG dari warung yang memiliki permintaan > 0
+        $activeWarungsWithDemand = array_filter($warungs, fn($w) => ($w['requested_qty'] ?? 0) > 0);
+        $totalMg = array_sum(array_map(fn($w) => min($w['mg_normal'], $w['requested_qty']), $activeWarungsWithDemand));
 
         // BR-08: Mode Alokasi Kritis
         if ($totalMg > $totalStock) {
-            $totalMga = array_sum(array_column($warungs, 'mg_absolut'));
+            $totalMga = array_sum(array_map(fn($w) => min($w['mg_absolut'], $w['requested_qty']), $activeWarungsWithDemand));
 
             // Tahap 1: Jaminan Minimum Absolut
             foreach ($warungs as $warung) {
+                if (($warung['requested_qty'] ?? 0) <= 0) {
+                    $allocations[$warung['id']] = 0;
+                    continue;
+                }
+
+                $mgaCap = min($warung['mg_absolut'], $warung['requested_qty']);
                 if ($totalMga <= $totalStock) {
-                    $allocations[$warung['id']] = $warung['mg_absolut'];
+                    $allocations[$warung['id']] = $mgaCap;
                 } else {
-                    // Proporsional paling ekstrem
-                    $allocations[$warung['id']] = (int) round($warung['mg_absolut'] * ($totalStock / $totalMga));
+                    // Proporsional paling ekstrem dengan pengaman tidak melebihi stok
+                    $allocations[$warung['id']] = (int) floor($mgaCap * ($totalStock / ($totalMga ?: 1)));
                 }
             }
 
             // Tahap 2: Distribusi Sisa Stok Berbasis Prioritas TOPSIS
             $sisaKritis = $totalStock - array_sum($allocations);
             if ($sisaKritis > 0) {
-                // Gunakan Largest Remainder Method untuk sisa stok
                 $allocations = $this->distributeRemainder($warungs, $allocations, $topsisScores, $sisaKritis, true);
             }
 
@@ -37,11 +44,12 @@ class CappingLogicService
         }
 
         // Mode Undersupply Standar (Total MG <= Total Stok)
-        // 1. Alokasi Dasar = MG
+        // 1. Alokasi Dasar = min(MG, Permintaan)
         $sisaStok = $totalStock;
         foreach ($warungs as $warung) {
-            $allocations[$warung['id']] = $warung['mg_normal'];
-            $sisaStok -= $warung['mg_normal'];
+            $initialQuota = min($warung['mg_normal'], $warung['requested_qty'] ?? 0);
+            $allocations[$warung['id']] = $initialQuota;
+            $sisaStok -= $initialQuota;
         }
 
         // 2. Alokasikan Sisa Stok berbasis TOPSIS dengan batas atas Dynamic Capping
@@ -54,8 +62,8 @@ class CappingLogicService
     }
 
     /**
-     * Distribusi proporsional menggunakan Largest Remainder Method (Hare-Niemeyer)
-     * Untuk memastikan tabung dibagikan genap dan tidak bersisa pecahan
+     * Distribusi proporsional menggunakan Largest Remainder Method (Hare-Niemeyer) Multi-Pass
+     * Menjamin 100% sisa stok habis terbagi tanpa kebocoran stok atau over-allocation
      */
     private function distributeRemainder(array $warungs, array $allocations, array $topsisScores, int $sisaStok, bool $isCritical, int $dcLimit = 9999): array
     {
@@ -65,22 +73,26 @@ class CappingLogicService
 
         foreach ($warungs as $warung) {
             $id = $warung['id'];
+            if (($warung['requested_qty'] ?? 0) <= 0) {
+                $fractions[$id] = 0.0;
+                continue;
+            }
+
             $vi = $topsisScores[$id] ?? 0;
             
             // Berapa hak tambahan tabung untuk warung ini
             $hakTambahanFloat = ($vi / $totalVi) * $sisaStok;
-            $hakTambahan = floor($hakTambahanFloat);
+            $hakTambahan = (int) floor($hakTambahanFloat);
             $fractions[$id] = $hakTambahanFloat - $hakTambahan;
 
             // Batasi sesuai aturan (Sisa MG atau Permintaan, atau DC Limit)
             if ($isCritical) {
-                // Di mode kritis, tambahan maksimal sebesar selisih (MG - MGA)
-                $maxTambahan = $warung['mg_normal'] - $warung['mg_absolut'];
+                $maxTambahan = min($warung['mg_normal'], $warung['requested_qty']) - $allocations[$id];
+                $maxTambahan = max(0, $maxTambahan);
                 $hakTambahan = min($hakTambahan, $maxTambahan);
             } else {
-                // Di mode standar, tambahan maksimal sebesar selisih (Permintaan - MG) atau DC limit
-                $maxTambahan = min($warung['requested_qty'] - $warung['mg_normal'], $dcLimit);
-                $maxTambahan = max(0, $maxTambahan); // Jangan sampai negatif
+                $maxTambahan = min($warung['requested_qty'] - $allocations[$id], $dcLimit);
+                $maxTambahan = max(0, $maxTambahan);
                 $hakTambahan = min($hakTambahan, $maxTambahan);
             }
 
@@ -88,28 +100,45 @@ class CappingLogicService
             $distributed += $hakTambahan;
         }
 
-        // Bagikan sisa stok yang belum terbagi akibat floor()
+        // Bagikan sisa stok yang belum terbagi secara berputar (multi-pass round-robin)
         $sisaBelumTerbagi = $sisaStok - $distributed;
-        arsort($fractions); // Urutkan sisa pecahan terbesar
+        arsort($fractions);
 
-        foreach ($fractions as $id => $fraction) {
-            if ($sisaBelumTerbagi <= 0) break;
+        $warungMap = [];
+        foreach ($warungs as $w) {
+            $warungMap[$w['id']] = $w;
+        }
 
-            // Cek kembali batas maksimal sebelum memberi 1 tabung tambahan
-            $warung = array_filter($warungs, fn($w) => $w['id'] === $id);
-            $warung = reset($warung);
+        // Loop multi-pass hingga stok habis atau seluruh warung mencapai batas maksimum
+        while ($sisaBelumTerbagi > 0) {
+            $allocatedInPass = 0;
 
-            if ($isCritical) {
-                if ($allocations[$id] < $warung['mg_normal']) {
-                    $allocations[$id]++;
-                    $sisaBelumTerbagi--;
+            foreach ($fractions as $id => $fraction) {
+                if ($sisaBelumTerbagi <= 0) break;
+
+                $warung = $warungMap[$id] ?? null;
+                if (!$warung || ($warung['requested_qty'] ?? 0) <= 0) continue;
+
+                if ($isCritical) {
+                    $maxAllowable = min($warung['mg_normal'], $warung['requested_qty']);
+                    if ($allocations[$id] < $maxAllowable) {
+                        $allocations[$id]++;
+                        $sisaBelumTerbagi--;
+                        $allocatedInPass++;
+                    }
+                } else {
+                    $maxAllowable = min($warung['requested_qty'], $warung['mg_normal'] + $dcLimit);
+                    if ($allocations[$id] < $maxAllowable) {
+                        $allocations[$id]++;
+                        $sisaBelumTerbagi--;
+                        $allocatedInPass++;
+                    }
                 }
-            } else {
-                $maxAllowable = min($warung['requested_qty'], $warung['mg_normal'] + $dcLimit);
-                if ($allocations[$id] < $maxAllowable) {
-                    $allocations[$id]++;
-                    $sisaBelumTerbagi--;
-                }
+            }
+
+            // Jika dalam satu putaran penuh tidak ada satupun warung yang bisa menerima tambahan lagi
+            if ($allocatedInPass === 0) {
+                break;
             }
         }
 

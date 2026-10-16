@@ -26,9 +26,34 @@ class DistributionController extends Controller
             ]);
         }
 
-        // Untuk Owner, kembalikan halaman Dashboard utamanya
+        // Untuk Owner, kembalikan halaman Dashboard utamanya beserta data tren pemenuhan PPH (FR-OWN-08)
+        $distributions = Distribution::with('details')->latest()->paginate(10);
+
+        // Agregasi tren pemenuhan historis pangkalan & warung
+        $fulfillmentStats = Distribution::with('details')
+            ->whereIn('status', ['locked', 'completed'])
+            ->latest('date')
+            ->take(7)
+            ->get()
+            ->reverse()
+            ->map(function ($dist) {
+                $totalRequested = $dist->details->sum('requested_qty');
+                $totalFinal = $dist->details->sum('final_qty');
+                $fulfillmentRate = $totalRequested > 0 ? round(($totalFinal / $totalRequested) * 100, 1) : 100;
+
+                return [
+                    'date' => date('d M', strtotime($dist->date)),
+                    'full_date' => $dist->date,
+                    'total_stock' => $dist->total_stock,
+                    'total_requested' => $totalRequested,
+                    'total_allocated' => $totalFinal,
+                    'fulfillment_rate' => $fulfillmentRate,
+                ];
+            })->values();
+
         return Inertia::render('Dashboard', [
-            'distributions' => Distribution::latest()->paginate(10)
+            'distributions' => $distributions,
+            'fulfillment_stats' => $fulfillmentStats,
         ]);
     }
 
@@ -61,15 +86,49 @@ class DistributionController extends Controller
         return redirect()->route('distributions.edit', $distribution->id);
     }
 
-    public function edit(Distribution $distribution)
+    public function edit(Distribution $distribution, HybridEngineService $engine)
     {
         $distribution->load('details.warung');
         // ponytail: inferred day from details to avoid DB migration. Upgrade path: add 'hari' column to 'distributions' table if mixed-day cycles are allowed.
         $hari_distribusi = $distribution->details->first()?->warung?->hari_distribusi;
 
+        // Ambil skor TOPSIS dari session flash jika ada
+        $topsis_scores = session('topsis_scores', []);
+
+        // Fallback: Jika belum ada di session tapi sudah ada permintaan, hitung skor TOPSIS on-the-fly untuk transparansi visual (FR-OWN-05)
+        if (empty($topsis_scores) && $distribution->details->sum('requested_qty') > 0) {
+            $warungIds = $distribution->details->pluck('warung_id')->toArray();
+            $historyStats = DistributionDetail::whereIn('warung_id', $warungIds)
+                ->whereHas('distribution', fn($q) => $q->where('date', '<', $distribution->date)->whereIn('status', ['locked', 'completed']))
+                ->selectRaw('warung_id, SUM(final_qty) as total_received, SUM(requested_qty) as total_requested')
+                ->groupBy('warung_id')
+                ->get()
+                ->keyBy('warung_id');
+
+            $warungsData = [];
+            foreach ($distribution->details as $detail) {
+                $warung = $detail->warung;
+                $stat = $historyStats->get($warung->id);
+                $warungsData[] = [
+                    'id' => $detail->id,
+                    'requested_qty' => (int) $detail->requested_qty,
+                    'payment_status' => $warung->payment_status,
+                    'margin_category' => $warung->margin_category,
+                    'mg_normal' => $warung->mg_normal,
+                    'mg_absolut' => $warung->mg_absolut,
+                    'history_received' => $stat ? (int)$stat->total_received : 0,
+                    'history_requested' => $stat ? (int)$stat->total_requested : 0,
+                ];
+            }
+
+            $engineRes = $engine->execute($warungsData, $distribution->total_stock, $distribution->alpha_capping);
+            $topsis_scores = $engineRes['topsis_scores'] ?? [];
+        }
+
         return Inertia::render('Distribution/Workspace', [
             'distribution' => $distribution,
             'hari_distribusi' => $hari_distribusi,
+            'topsis_scores' => $topsis_scores,
         ]);
     }
 
@@ -90,23 +149,26 @@ class DistributionController extends Controller
 
             $distribution->refresh();
             $distribution->load('details.warung');
+
+            // Optimasi N+1 Query: Hitung seluruh riwayat C1 sekaligus dalam 1 query agregasi
+            $warungIds = $distribution->details->pluck('warung_id')->toArray();
+            $historyStats = DistributionDetail::whereIn('warung_id', $warungIds)
+                ->whereHas('distribution', fn($q) => $q->where('date', '<', $distribution->date)->whereIn('status', ['locked', 'completed']))
+                ->selectRaw('warung_id, SUM(final_qty) as total_received, SUM(requested_qty) as total_requested')
+                ->groupBy('warung_id')
+                ->get()
+                ->keyBy('warung_id');
             
             $warungsData = [];
             foreach ($distribution->details as $detail) {
                 $warung = $detail->warung;
-                
-                // Hitung histori Pemenuhan C1 (Total Diterima / Total Diminta) untuk warung ini di masa lalu
-                $historyReceived = DistributionDetail::where('warung_id', $warung->id)
-                    ->whereHas('distribution', fn($q) => $q->where('date', '<', $distribution->date)->whereIn('status', ['locked', 'completed']))
-                    ->sum('final_qty');
-                    
-                $historyRequested = DistributionDetail::where('warung_id', $warung->id)
-                    ->whereHas('distribution', fn($q) => $q->where('date', '<', $distribution->date)->whereIn('status', ['locked', 'completed']))
-                    ->sum('requested_qty');
+                $stat = $historyStats->get($warung->id);
+                $historyReceived = $stat ? (int)$stat->total_received : 0;
+                $historyRequested = $stat ? (int)$stat->total_requested : 0;
 
                 $warungsData[] = [
                     'id' => $detail->id, 
-                    'requested_qty' => $detail->requested_qty,
+                    'requested_qty' => (int) $detail->requested_qty,
                     'payment_status' => $warung->payment_status,
                     'margin_category' => $warung->margin_category,
                     'mg_normal' => $warung->mg_normal,
@@ -117,7 +179,8 @@ class DistributionController extends Controller
             }
 
             // Jalankan Engine ROC-TOPSIS
-            $allocations = $engine->execute($warungsData, $distribution->total_stock, $distribution->alpha_capping);
+            $engineResult = $engine->execute($warungsData, $distribution->total_stock, $distribution->alpha_capping);
+            $allocations = $engineResult['allocations'];
 
             foreach ($allocations as $detailId => $qty) {
                 DistributionDetail::where('id', $detailId)->update([
@@ -125,6 +188,9 @@ class DistributionController extends Controller
                     'final_qty' => $qty // Default disamakan dengan rekomendasi sebelum di-override
                 ]);
             }
+
+            // Simpan skor TOPSIS sementara di session untuk dirender di UI
+            session()->flash('topsis_scores', $engineResult['topsis_scores'] ?? []);
         });
 
         return back()->with('message', 'Perhitungan SPK Hybrid ROC-TOPSIS berhasil dijalankan.');

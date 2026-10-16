@@ -5,9 +5,9 @@ import PrimaryButton from '@/Components/PrimaryButton';
 import TextInput from '@/Components/TextInput';
 import InputLabel from '@/Components/InputLabel';
 import Modal from '@/Components/Modal';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { AreaChart, Area, LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 
-export default function Dashboard({ distributions }) {
+export default function Dashboard({ distributions, fulfillment_stats = [] }) {
     const [showAllCols, setShowAllCols] = useState(false);
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [deleteId, setDeleteId] = useState(null);
@@ -27,6 +27,13 @@ export default function Dashboard({ distributions }) {
         setIsModalOpen(false);
         post(route('distributions.store'));
     };
+
+    // Data for charts fallback if fulfillment_stats is empty
+    const chartData = fulfillment_stats.length > 0 ? fulfillment_stats : distributions.data.map(d => ({
+        date: new Date(d.date).toLocaleDateString('id-ID', { day: '2-digit', month: 'short' }),
+        total_stock: d.total_stock,
+        fulfillment_rate: 100,
+    })).reverse();
 
     return (
         <AuthenticatedLayout
@@ -100,33 +107,71 @@ export default function Dashboard({ distributions }) {
                         </form>
                     </div>
 
-                    {/* Analytics Chart & Export Bar */}
-                    <div className="glass overflow-hidden rounded-2xl p-6 border border-white">
-                        <div className="flex justify-between items-center mb-6">
-                            <h3 className="text-xl font-bold text-slate-800">Analitik Pasokan</h3>
-                            <a href={route('reports.excel')} className="inline-flex items-center gap-2 bg-emerald-100 text-emerald-700 px-4 py-2 rounded-lg font-bold hover:bg-emerald-200 transition-colors border border-emerald-200">
-                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
-                                  <path fillRule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25zM12.75 6a.75.75 0 00-1.5 0v6c0 .414.336.75.75.75h4.5a.75.75 0 000-1.5h-3.75V6z" clipRule="evenodd" />
-                                </svg>
-                                Export Semua (Excel)
-                            </a>
+                    {/* FR-OWN-08: Analytics Chart & Export Bar */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        {/* Grafik 1: Stok Pasokan Agen */}
+                        <div className="glass overflow-hidden rounded-2xl p-6 border border-white flex flex-col justify-between">
+                            <div className="flex justify-between items-center mb-4">
+                                <div>
+                                    <h3 className="text-lg font-bold text-slate-800">Tren Pasokan Stok Agen (S)</h3>
+                                    <p className="text-xs text-slate-500">Volume tabung LPG 3 Kg per siklus</p>
+                                </div>
+                                <span className="text-xs font-mono font-bold text-indigo-600 bg-indigo-50 border border-indigo-150 px-2 py-1 rounded">
+                                    FR-OWN-03
+                                </span>
+                            </div>
+                            <div className="h-56 w-full">
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <AreaChart data={chartData}>
+                                        <defs>
+                                            <linearGradient id="colorStock" x1="0" y1="0" x2="0" y2="1">
+                                                <stop offset="5%" stopColor="#6366f1" stopOpacity={0.8}/>
+                                                <stop offset="95%" stopColor="#6366f1" stopOpacity={0.05}/>
+                                            </linearGradient>
+                                        </defs>
+                                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                                        <XAxis dataKey="date" tick={{fontSize: 11, fill: '#64748b'}} axisLine={false} tickLine={false} />
+                                        <YAxis tick={{fontSize: 11, fill: '#64748b'}} axisLine={false} tickLine={false} />
+                                        <Tooltip contentStyle={{borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)', fontSize: '12px'}} />
+                                        <Area type="monotone" dataKey="total_stock" stroke="#4f46e5" strokeWidth={2.5} fillOpacity={1} fill="url(#colorStock)" name="Stok Agen (Tbg)" />
+                                    </AreaChart>
+                                </ResponsiveContainer>
+                            </div>
                         </div>
-                        <div className="h-64 w-full">
-                            <ResponsiveContainer width="100%" height="100%">
-                                <AreaChart data={[...distributions.data].reverse()}>
-                                    <defs>
-                                        <linearGradient id="colorStock" x1="0" y1="0" x2="0" y2="1">
-                                            <stop offset="5%" stopColor="#6366f1" stopOpacity={0.8}/>
-                                            <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
-                                        </linearGradient>
-                                    </defs>
-                                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                                    <XAxis dataKey="date" tick={{fontSize: 12, fill: '#64748b'}} axisLine={false} tickLine={false} />
-                                    <YAxis tick={{fontSize: 12, fill: '#64748b'}} axisLine={false} tickLine={false} />
-                                    <Tooltip contentStyle={{borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)'}} />
-                                    <Area type="monotone" dataKey="total_stock" stroke="#4f46e5" strokeWidth={3} fillOpacity={1} fill="url(#colorStock)" name="Stok Agen (Tabung)" />
-                                </AreaChart>
-                            </ResponsiveContainer>
+
+                        {/* Grafik 2: Tren Persentase Pemenuhan Warung (PPHi) FR-OWN-08 */}
+                        <div className="glass overflow-hidden rounded-2xl p-6 border border-white flex flex-col justify-between">
+                            <div className="flex justify-between items-center mb-4">
+                                <div>
+                                    <h3 className="text-lg font-bold text-slate-800">Tren Pemenuhan Permintaan (PPH)</h3>
+                                    <p className="text-xs text-slate-500">Tingkat pemenuhan kuota warung (Kriteria C1)</p>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <a href={route('reports.excel')} className="inline-flex items-center gap-1.5 bg-emerald-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-emerald-700 transition-colors shadow-sm">
+                                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
+                                            <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+                                        </svg>
+                                        Excel
+                                    </a>
+                                </div>
+                            </div>
+                            <div className="h-56 w-full">
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <AreaChart data={chartData}>
+                                        <defs>
+                                            <linearGradient id="colorPph" x1="0" y1="0" x2="0" y2="1">
+                                                <stop offset="5%" stopColor="#10b981" stopOpacity={0.8}/>
+                                                <stop offset="95%" stopColor="#10b981" stopOpacity={0.05}/>
+                                            </linearGradient>
+                                        </defs>
+                                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                                        <XAxis dataKey="date" tick={{fontSize: 11, fill: '#64748b'}} axisLine={false} tickLine={false} />
+                                        <YAxis unit="%" domain={[0, 100]} tick={{fontSize: 11, fill: '#64748b'}} axisLine={false} tickLine={false} />
+                                        <Tooltip contentStyle={{borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)', fontSize: '12px'}} />
+                                        <Area type="monotone" dataKey="fulfillment_rate" stroke="#059669" strokeWidth={2.5} fillOpacity={1} fill="url(#colorPph)" name="Rata-rata Pemenuhan (%)" />
+                                    </AreaChart>
+                                </ResponsiveContainer>
+                            </div>
                         </div>
                     </div>
 

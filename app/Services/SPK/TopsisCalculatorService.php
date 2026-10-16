@@ -70,9 +70,11 @@ class TopsisCalculatorService
                 pow($aMinus['C3'] - $v['C3'], 2)
             );
 
-            $vi = $dMinus / (($dPlus + $dMinus) ?: 1); // Hindari div zero jika D+ & D- = 0
+            $distanceSum = $dPlus + $dMinus;
+            // Jika semua alternatif identik, beri nilai preferensi merata (1 / N) bukan 0
+            $vi = ($distanceSum == 0) ? (1.0 / count($alternatives)) : ($dMinus / $distanceSum);
 
-            $results[$id] = $vi;
+            $results[$id] = round($vi, 4);
         }
 
         return $results;

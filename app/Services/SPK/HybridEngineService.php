@@ -31,7 +31,11 @@ class HybridEngineService
             foreach ($warungs as $warung) {
                 $allocations[$warung['id']] = $warung['requested_qty'];
             }
-            return $allocations;
+            return [
+                'allocations' => $allocations,
+                'topsis_scores' => [],
+                'weights' => $this->roc->getWeights(),
+            ];
         }
 
         // BR-02: Kondisi Undersupply -> Jalankan Mesin
@@ -62,6 +66,10 @@ class HybridEngineService
         // 4. Masukkan ke Capping Logic (MGA, MG, Dynamic Capping)
         $finalAllocations = $this->capping->applyCapping($warungs, $totalStock, $alpha, $topsisScores);
 
-        return $finalAllocations;
+        return [
+            'allocations' => $finalAllocations,
+            'topsis_scores' => $topsisScores,
+            'weights' => $weights,
+        ];
     }
 }

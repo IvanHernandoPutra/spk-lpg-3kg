@@ -87,6 +87,7 @@ export default function Index({ warungs, filters }) {
                             <table className="w-full text-left border-collapse whitespace-nowrap">
                                 <thead>
                                     <tr className="bg-gray-50/80 border-b border-gray-100">
+                                        <th className="py-4 px-5 text-xs font-semibold text-gray-500 uppercase tracking-wider">ID Warung</th>
                                         <th className="py-4 px-5 text-xs font-semibold text-gray-500 uppercase tracking-wider">Nama Warung</th>
                                         <th className={`py-4 px-5 text-xs font-semibold text-gray-500 uppercase tracking-wider ${showAllCols ? '' : 'hidden md:table-cell'}`}>Hari Distribusi</th>
                                         <th className={`py-4 px-5 text-xs font-semibold text-gray-500 uppercase tracking-wider ${showAllCols ? '' : 'hidden md:table-cell'}`}>Alamat</th>
@@ -100,7 +101,7 @@ export default function Index({ warungs, filters }) {
                                 <tbody className="divide-y divide-gray-50">
                                     {warungs.data.length === 0 ? (
                                         <tr>
-                                            <td colSpan="8" className="py-8 px-5 text-center text-gray-500">
+                                            <td colSpan="9" className="py-8 px-5 text-center text-gray-500">
                                                 <div className="flex flex-col items-center justify-center">
                                                     <svg className="w-12 h-12 text-gray-300 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
@@ -112,6 +113,9 @@ export default function Index({ warungs, filters }) {
                                     ) : (
                                         warungs.data.map((warung) => (
                                             <tr key={warung.id} className="bg-white hover:bg-gray-50/50 transition-colors">
+                                                <td className="py-4 px-5 text-xs font-mono font-bold text-indigo-600 whitespace-nowrap">
+                                                    WRG-{String(warung.id).padStart(3, '0')}
+                                                </td>
                                                 <td className="py-4 px-5 text-sm font-medium text-gray-900 whitespace-nowrap">
                                                     {warung.name}
                                                 </td>
